@@ -166,6 +166,7 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         "properties": {
             "price": {"type": "integer", "nullable": True},
             "year": {"type": "integer", "nullable": True},
+            "color":{"type": "string", "nullable",: True},
             "make": {"type": "string", "nullable": True},
             "model": {"type": "string", "nullable": True},
             "mileage": {"type": "integer", "nullable": True},
@@ -180,6 +181,7 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         "If a value is not present, use null. "
         "Rules: integers for price/year/mileage; price in USD; mileage in miles; "
         "do not infer values not explicitly present; do not add extra keys."
+        "Color: should be the exterior of a car. Blue, white, black, grey."
     )
 
     # FIX: Combine instruction and text into one prompt string (SDK compatibility)
@@ -318,6 +320,7 @@ def llm_extract_http(request: Request):
                 "make": parsed.get("make"),
                 "model": parsed.get("model"),
                 "mileage": parsed.get("mileage"),
+                "color": parsed.get("color")
                 "llm_provider": "vertex",
                 "llm_model": LLM_MODEL,
                 "llm_ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
