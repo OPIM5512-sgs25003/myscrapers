@@ -40,6 +40,11 @@ PRICE_RE      = re.compile(r"\$\s?([0-9,]+)")
 YEAR_RE       = re.compile(r"\b(19|20)\d{2}\b")
 MAKE_MODEL_RE = re.compile(r"\b([A-Z][a-z]+)\s+([A-Z][A-Za-z0-9]+)")
 
+TRANSMISSION_RE = re.compile(r"\b(automatic|manual|cvt)\b", re.I)
+FUEL_TYPE_RE = re.compile(r"\b(gas|diesel|electric|hybrid)\b", re.I)
+CONDITION_RE = re.compile(r"\b(excellent|good|fair|like new|new)\b", re.I)
+TRUCK_RE = re.compile(r"\b(truck|pickup)\b", re.I)
+
 # -------------------- HELPERS --------------------
 def _list_run_ids(bucket: str, scrapes_prefix: str) -> list[str]:
     """
@@ -149,6 +154,20 @@ def parse_listing(text: str) -> dict:
     if mi is not None:
         d["mileage"] = mi
 
+    t = TRANSMISSION_RE.search(text)
+    if t:
+        d["transmission"] = t.group(1).lower()
+
+    f = FUEL_TYPE_RE.search(text)
+    if f:
+        d["fuel_type"] = f.group(1).lower()
+
+    c = CONDITION_RE.search(text)
+    if c:
+        d["condition"] = c.group(1).lower()
+
+    d["is_truck"] = bool(TRUCK_RE.search(text))
+    
     return d
 
 # -------------------- HTTP ENTRY --------------------
