@@ -2,57 +2,140 @@ name: Deploy materialize-llm (CF Gen2 + Cloud Scheduler)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cloud_function/materialize-llm/**'
+      - '.github/workflows/deploy-materialize-llm.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: ${{ vars.PROJECT_ID }}
+  REGION: ${{ vars.REGION }}
+  FUNCTION_NAME: materialize-llm
+  FUNCTION_DIR: cloud_function/materialize-llm
+  ENTRY_POINT: materialize_llm_http
+  RUNTIME: python312
+  BUCKET_NAME: ${{ vars.BUCKET_NAME }}
+  TIMEOUT_SECONDS: "900"
+  MEMORY: "2Gi"
+  STRUCTURED_PREFIX: "structured"
+  RUNTIME_SA: ${{ vars.RUNTIME_SA }}
+  DEPLOYER_SA: ${{ vars.DEPLOYER_SA }}
+  WORKLOAD_IDENTITY_PROVIDER: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
+  SCHEDULE_BODY: '{}'
+  CRON_EXPR: "20 * * * *"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      id-token: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Auth (WIF)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+          create_credentials_file: true
+          export_environment_variables: true
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
 
-      - name: Set project
-        run: gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
-
-      - name: Deploy function
+      - name: Verify source
+        shell: bash
         run: |
-          gcloud functions deploy materialize-llm \
+          set -euo pipefail
+          ls -la "${FUNCTION_DIR}"
+          test -f "${FUNCTION_DIR}/main.py"
+          test -f "${FUNCTION_DIR}/requirements.txt"
+
+      - name: Deploy Cloud Function (Gen2)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SA_ARGS=()
+          if [[ -n "${RUNTIME_SA:-}" ]]; then
+            gcloud iam service-accounts describe "${RUNTIME_SA}" >/dev/null 2>&1
+            SA_ARGS=(--service-account="${RUNTIME_SA}")
+          fi
+
+          gcloud functions deploy "${FUNCTION_NAME}" \
             --gen2 \
-            --region=us-central1 \
-            --runtime=python312 \
-            --source=cloud_function/materialize-llm \
-            --entry-point=materialize_llm_http \
+            --region="${REGION}" \
+            --runtime="${RUNTIME}" \
+            --source="${FUNCTION_DIR}" \
+            --entry-point="${ENTRY_POINT}" \
             --trigger-http \
-            --allow-unauthenticated \
-            --set-env-vars=GCS_BUCKET=${{ secrets.GCS_BUCKET }},STRUCTURED_PREFIX=structured
+            --no-allow-unauthenticated \
+            --timeout="${TIMEOUT_SECONDS}" \
+            --memory="${MEMORY}" \
+            "${SA_ARGS[@]}" \
+            --set-env-vars="GCS_BUCKET=${BUCKET_NAME},STRUCTURED_PREFIX=${STRUCTURED_PREFIX}"
+
+      - name: Grant invoker to deployer & runtime SAs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
+            --gen2 --region "${REGION}" \
+            --member="serviceAccount:${DEPLOYER_SA}"
+          if [[ -n "${RUNTIME_SA:-}" ]]; then
+            gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
+              --gen2 --region "${REGION}" \
+              --member="serviceAccount:${RUNTIME_SA}"
+          fi
 
       - name: Get Function URL
+        id: cfurl
+        shell: bash
         run: |
-          URL=$(gcloud functions describe materialize-llm --gen2 --region=us-central1 --format="value(serviceConfig.uri)")
-          echo "Function URL: $URL"
+          set -euo pipefail
+          URL=$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region "${REGION}" --format='value(serviceConfig.uri)')
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "Function URL: ${URL}"
 
-      - name: Create Scheduler Job
+      - name: Ensure Scheduler API enabled
+        shell: bash
         run: |
-          URL=$(gcloud functions describe materialize-llm --gen2 --region=us-central1 --format="value(serviceConfig.uri)")
+          set -euo pipefail
+          gcloud services list --enabled --filter="cloudscheduler.googleapis.com" --format="value(config.name)" | grep -q cloudscheduler.googleapis.com \
+            || gcloud services enable cloudscheduler.googleapis.com
 
-          gcloud scheduler jobs delete materialize-llm-hourly --location=us-central1 || true
+      - name: Create/Update Cloud Scheduler job (:20 ET, OIDC)
+        shell: bash
+        run: |
+          set -euo pipefail
+          JOB_NAME="${FUNCTION_NAME}-hourly"
+          URL="${{ steps.cfurl.outputs.url }}"
+          [[ -z "${URL}" ]] && { echo "Function URL empty"; exit 1; }
 
-          gcloud scheduler jobs create http materialize-llm-hourly \
-            --location=us-central1 \
-            --schedule="20 * * * *" \
-            --uri="$URL" \
-            --http-method=POST \
-            --time-zone="America/New_York"
+          if gcloud scheduler jobs describe "$JOB_NAME" --location="${REGION}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "$JOB_NAME" \
+              --location="${REGION}" \
+              --schedule="${CRON_EXPR}" \
+              --time-zone="America/New_York" \
+              --uri="${URL}" \
+              --http-method=POST \
+              --message-body='${{ env.SCHEDULE_BODY }}' \
+              --attempt-deadline="${TIMEOUT_SECONDS}s" \
+              --oidc-service-account-email="${RUNTIME_SA}" \
+              --oidc-token-audience="${URL}"
+          else
+            gcloud scheduler jobs create http "$JOB_NAME" \
+              --location="${REGION}" \
+              --schedule="${CRON_EXPR}" \
+              --time-zone="America/New_York" \
+              --uri="${URL}" \
+              --http-method=POST \
+              --message-body='${{ env.SCHEDULE_BODY }}' \
+              --attempt-deadline="${TIMEOUT_SECONDS}s" \
+              --oidc-service-account-email="${RUNTIME_SA}" \
+              --oidc-token-audience="${URL}"
+          fi
