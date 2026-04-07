@@ -1,0 +1,58 @@
+name: Deploy materialize-llm (CF Gen2 + Cloud Scheduler)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set project
+        run: gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy function
+        run: |
+          gcloud functions deploy materialize-llm \
+            --gen2 \
+            --region=us-central1 \
+            --runtime=python312 \
+            --source=cloud_function/materialize-llm \
+            --entry-point=materialize_llm_http \
+            --trigger-http \
+            --allow-unauthenticated \
+            --set-env-vars=GCS_BUCKET=${{ secrets.GCS_BUCKET }},STRUCTURED_PREFIX=structured
+
+      - name: Get Function URL
+        run: |
+          URL=$(gcloud functions describe materialize-llm --gen2 --region=us-central1 --format="value(serviceConfig.uri)")
+          echo "Function URL: $URL"
+
+      - name: Create Scheduler Job
+        run: |
+          URL=$(gcloud functions describe materialize-llm --gen2 --region=us-central1 --format="value(serviceConfig.uri)")
+
+          gcloud scheduler jobs delete materialize-llm-hourly --location=us-central1 || true
+
+          gcloud scheduler jobs create http materialize-llm-hourly \
+            --location=us-central1 \
+            --schedule="20 * * * *" \
+            --uri="$URL" \
+            --http-method=POST \
+            --time-zone="America/New_York"
