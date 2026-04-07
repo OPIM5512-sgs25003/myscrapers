@@ -166,12 +166,12 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         "properties": {
             "price": {"type": "integer", "nullable": True},
             "year": {"type": "integer", "nullable": True},
-            "color":{"type": "string", "nullable",: True},
+            "color":{"type": "string", "nullable": True},
             "make": {"type": "string", "nullable": True},
             "model": {"type": "string", "nullable": True},
             "mileage": {"type": "integer", "nullable": True},
         },
-        "required": ["price", "year", "make", "model", "mileage"]
+        "required": ["price", "year", "make", "model", "mileage", "color"]
     }
 
     # System instruction (will be prepended to the prompt)
@@ -320,7 +320,7 @@ def llm_extract_http(request: Request):
                 "make": parsed.get("make"),
                 "model": parsed.get("model"),
                 "mileage": parsed.get("mileage"),
-                "color": parsed.get("color")
+                "color": parsed.get("color"),
                 "llm_provider": "vertex",
                 "llm_model": LLM_MODEL,
                 "llm_ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
