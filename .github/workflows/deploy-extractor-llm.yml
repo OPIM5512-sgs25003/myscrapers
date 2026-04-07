@@ -140,28 +140,28 @@ jobs:
       
       # --- 4. CLOUD SCHEDULER SETUP (OIDC) ---
 
-      - name: Bootstrap IAM for Scheduler OIDC (runtime SA)
-        run: |
-          set -euo pipefail
-          PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-          SCHED_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com"
-          echo "Scheduler agent: ${SCHED_AGENT}"
+      # - name: Bootstrap IAM for Scheduler OIDC (runtime SA)
+      #  run: |
+      #    set -euo pipefail
+      #    PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+      #    SCHED_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com"
+      #    echo "Scheduler agent: ${SCHED_AGENT}"
 
-          gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
-            --member="serviceAccount:${SCHED_AGENT}" \
-            --role="roles/iam.serviceAccountTokenCreator" || {
-              echo "::error::Permission denied adding tokenCreator to ${RUNTIME_SA}. Run (once as project owner):"
-              echo "gcloud iam service-accounts add-iam-policy-binding \"${RUNTIME_SA}\" --member=\"serviceAccount:${SCHED_AGENT}\" --role=\"roles/iam.serviceAccountTokenCreator\""
-              exit 1
-            }
+      #    gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
+      #      --member="serviceAccount:${SCHED_AGENT}" \
+      #      --role="roles/iam.serviceAccountTokenCreator" || {
+      #        echo "::error::Permission denied adding tokenCreator to ${RUNTIME_SA}. Run (once as project owner):"
+      #       echo "gcloud iam service-accounts add-iam-policy-binding \"${RUNTIME_SA}\" --member=\"serviceAccount:${SCHED_AGENT}\" --role=\"roles/iam.serviceAccountTokenCreator\""
+      #        exit 1
+      #      }
 
-          gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
-            --member="serviceAccount:${DEPLOYER_SA}" \
-            --role="roles/iam.serviceAccountUser" || {
-              echo "::error::Permission denied adding ServiceAccountUser for ${DEPLOYER_SA} on ${RUNTIME_SA}. Run:"
-              echo "gcloud iam service-accounts add-iam-policy-binding \"${RUNTIME_SA}\" --member=\"serviceAccount:${DEPLOYER_SA}\" --role=\"roles/iam.serviceAccountUser\""
-              exit 1
-            }
+      #    gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
+      #      --member="serviceAccount:${DEPLOYER_SA}" \
+      #      --role="roles/iam.serviceAccountUser" || {
+      #        echo "::error::Permission denied adding ServiceAccountUser for ${DEPLOYER_SA} on ${RUNTIME_SA}. Run:"
+      #       echo "gcloud iam service-accounts add-iam-policy-binding \"${RUNTIME_SA}\" --member=\"serviceAccount:${DEPLOYER_SA}\" --role=\"roles/iam.serviceAccountUser\""
+      #        exit 1
+      #      }
 
       - name: Create/Update Cloud Scheduler job (:1 ET, uses runtime SA OIDC)
         shell: bash
