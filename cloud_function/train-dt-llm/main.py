@@ -1,4 +1,4 @@
-# Decision Tree: train on all data < today (local TZ); hold out today
+# Decision Tree (LLM version): train on all data < today (local TZ); hold out today
 # HTTP entrypoint: train_dt_http
 
 import os, io, json, logging, traceback, re
@@ -15,9 +15,9 @@ from sklearn.metrics import mean_absolute_error
 # ---- ENV ----
 PROJECT_ID     = os.getenv("PROJECT_ID", "")
 GCS_BUCKET     = os.getenv("GCS_BUCKET", "")
-DATA_KEY       = os.getenv("DATA_KEY", "structured/datasets/listings_master.csv")
-OUTPUT_PREFIX  = os.getenv("OUTPUT_PREFIX", "preds")            # e.g., "structured/preds"
-TIMEZONE       = os.getenv("TIMEZONE", "America/New_York")      # split by local day
+DATA_KEY       = os.getenv("DATA_KEY", "structured/datasets/listings_llm_master.csv")
+OUTPUT_PREFIX  = os.getenv("OUTPUT_PREFIX", "preds_llm")         # separate output for LLM model
+TIMEZONE       = os.getenv("TIMEZONE", "America/New_York")       # split by local day
 LOG_LEVEL      = os.getenv("LOG_LEVEL", "INFO")
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
@@ -43,7 +43,7 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
     client = storage.Client(project=PROJECT_ID)
     df = _read_csv_from_gcs(client, GCS_BUCKET, DATA_KEY)
 
-    required = {"scraped_at", "price", "make", "model", "year", "mileage"}
+    required = {"scraped_at", "price", "make", "model", "year", "mileage", "color"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
@@ -85,9 +85,9 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
     if len(train_df) < 40:
         return {"status": "noop", "reason": "too few training rows", "train_rows": int(len(train_df))}
 
-    # --- Model: make, model, year_num, mileage_num -> price_num ---
+    # --- Model: make, model, color, year_num, mileage_num -> price_num ---
     target = "price_num"
-    cat_cols = ["make", "model"]
+    cat_cols = ["make", "model", "color"]
     num_cols = ["year_num", "mileage_num"]
     feats = cat_cols + num_cols
 
@@ -108,16 +108,16 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
     y_train = train_df[target]
     pipe.fit(X_train, y_train)
 
-    # ---- Predict/evaluate on today's holdout (now includes actual price fields) ----
+    # ---- Predict/evaluate on today's holdout ----
     mae_today = None
     preds_df = pd.DataFrame()
     if not holdout_df.empty:
         X_h = holdout_df[feats]
         y_hat = pipe.predict(X_h)
 
-        cols = ["post_id", "scraped_at", "make", "model", "year", "mileage", "price"]
+        cols = ["post_id", "scraped_at", "make", "model", "year", "mileage", "color", "price"]
         preds_df = holdout_df[cols].copy()
-        preds_df["actual_price"] = holdout_df["price_num"]       # cleaned numeric truth
+        preds_df["actual_price"] = holdout_df["price_num"]
         preds_df["pred_price"]   = np.round(y_hat, 2)
 
         if holdout_df["price_num"].notna().any():
@@ -146,6 +146,8 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
         "output_key": out_key,
         "dry_run": dry_run,
         "timezone": TIMEZONE,
+        "data_key": DATA_KEY,
+        "features_used": feats,
     }
 
 def train_dt_http(request):
