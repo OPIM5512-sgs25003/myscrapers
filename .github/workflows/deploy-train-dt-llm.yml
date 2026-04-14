@@ -34,7 +34,7 @@ runs-on: ubuntu-latest
 steps:
 - uses: actions/checkout@v4
 
-- name: Auth (WIF)
+- name: "Auth (WIF)"
 uses: google-github-actions/auth@v2
 with:
 workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
@@ -42,12 +42,12 @@ service_account: ${{ env.DEPLOYER_SA }}
 create_credentials_file: true
 export_environment_variables: true
 
-- name: Setup gcloud
+- name: "Setup gcloud"
 uses: google-github-actions/setup-gcloud@v2
 with:
 project_id: ${{ env.PROJECT_ID }}
 
-- name: Verify source
+- name: "Verify source"
 shell: bash
 run: |
 set -euo pipefail
@@ -55,7 +55,7 @@ ls -la "${FUNCTION_DIR}"
 test -f "${FUNCTION_DIR}/main.py"
 test -f "${FUNCTION_DIR}/requirements.txt"
 
-- name: Deploy Cloud Function (Gen2)
+- name: "Deploy Cloud Function (Gen2)"
 shell: bash
 run: |
 set -euo pipefail
@@ -77,7 +77,7 @@ gcloud functions deploy "${FUNCTION_NAME}" \
 "${SA_ARGS[@]}" \
 --set-env-vars="PROJECT_ID=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},DATA_KEY=structured/datasets/listings_llm_master.csv,OUTPUT_PREFIX=preds_llm,TIMEZONE=America/New_York"
 
-- name: Grant invoker to deployer & runtime SAs
+- name: "Grant invoker to deployer & runtime SAs"
 shell: bash
 run: |
 set -euo pipefail
@@ -90,7 +90,7 @@ gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
 --member="serviceAccount:${RUNTIME_SA}"
 fi
 
-- name: Get Function URL
+- name: "Get Function URL"
 id: cfurl
 shell: bash
 run: |
@@ -99,14 +99,14 @@ URL=$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region "${REGION}" -
 echo "url=${URL}" >> "$GITHUB_OUTPUT"
 echo "Function URL: ${URL}"
 
-- name: Ensure Scheduler API enabled
+- name: "Ensure Scheduler API enabled"
 shell: bash
 run: |
 set -euo pipefail
 gcloud services list --enabled --filter="cloudscheduler.googleapis.com" --format="value(config.name)" | grep -q cloudscheduler.googleapis.com \
 || gcloud services enable cloudscheduler.googleapis.com
 
-- name: Create/Update Cloud Scheduler job (:25 ET, OIDC)
+- name: "Create/Update Cloud Scheduler job (:25 ET, OIDC)"
 shell: bash
 run: |
 set -euo pipefail
