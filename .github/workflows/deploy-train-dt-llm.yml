@@ -1,151 +1,152 @@
 name: Deploy train-dt-llm (CF Gen2 + Cloud Scheduler)
 
 on:
-workflow_dispatch:
-push:
-branches: [main]
-paths:
-- 'cloud_function/train-dt-llm/**'
-- '.github/workflows/deploy-train-dt-llm.yml'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'cloud_function/train-dt-llm/**'
+      - '.github/workflows/deploy-train-dt-llm.yml'
 
 permissions:
-contents: read
-id-token: write
+  contents: read
+  id-token: write
 
 env:
-PROJECT_ID: ${{ vars.PROJECT_ID }}
-REGION: ${{ vars.REGION }}
-FUNCTION_NAME: train-dt-llm
-FUNCTION_DIR: cloud_function/train-dt-llm
-ENTRY_POINT: train_dt_http
-RUNTIME: python312
-BUCKET_NAME: ${{ vars.BUCKET_NAME }}
-TIMEOUT_SECONDS: "900"
-MEMORY: "2Gi"
-RUNTIME_SA: ${{ vars.RUNTIME_SA }}
-DEPLOYER_SA: ${{ vars.DEPLOYER_SA }}
-WORKLOAD_IDENTITY_PROVIDER: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
-SCHEDULE_BODY: '{}'
-CRON_EXPR: "25 * * * *"
+  PROJECT_ID: ${{ vars.PROJECT_ID }}
+  REGION: ${{ vars.REGION }}
+  FUNCTION_NAME: train-dt-llm
+  FUNCTION_DIR: cloud_function/train-dt-llm
+  ENTRY_POINT: train_dt_http
+  RUNTIME: python312
+  BUCKET_NAME: ${{ vars.BUCKET_NAME }}
+  TIMEOUT_SECONDS: "900"
+  MEMORY: "2Gi"
+  RUNTIME_SA: ${{ vars.RUNTIME_SA }}
+  DEPLOYER_SA: ${{ vars.DEPLOYER_SA }}
+  WORKLOAD_IDENTITY_PROVIDER: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
+  SCHEDULE_BODY: '{}'
+  CRON_EXPR: '25 * * * *'
 
 jobs:
-deploy:
-runs-on: ubuntu-latest
+  deploy:
+    runs-on: ubuntu-latest
 
-steps:
-- name: Checkout
-uses: actions/checkout@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-- name: Auth (WIF)
-uses: google-github-actions/auth@v2
-with:
-workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
-service_account: ${{ env.DEPLOYER_SA }}
-create_credentials_file: true
-export_environment_variables: true
+      - name: Auth (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+          create_credentials_file: true
+          export_environment_variables: true
 
-- name: Setup gcloud
-uses: google-github-actions/setup-gcloud@v2
-with:
-project_id: ${{ env.PROJECT_ID }}
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
 
-- name: Verify source
-shell: bash
-run: |
-set -euo pipefail
-ls -la "${FUNCTION_DIR}"
-test -f "${FUNCTION_DIR}/main.py"
-test -f "${FUNCTION_DIR}/requirements.txt"
+      - name: Verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la "${FUNCTION_DIR}"
+          test -f "${FUNCTION_DIR}/main.py"
+          test -f "${FUNCTION_DIR}/requirements.txt"
 
-- name: Deploy Cloud Function (Gen2)
-shell: bash
-run: |
-set -euo pipefail
+      - name: Deploy Cloud Function (Gen2)
+        shell: bash
+        run: |
+          set -euo pipefail
 
-SA_ARGS=()
-if [[ -n "${RUNTIME_SA:-}" ]]; then
-SA_ARGS=(--service-account="${RUNTIME_SA}")
-fi
+          SA_ARGS=()
+          if [[ -n "${RUNTIME_SA:-}" ]]; then
+            SA_ARGS=(--service-account="${RUNTIME_SA}")
+          fi
 
-gcloud functions deploy "${FUNCTION_NAME}" \
---gen2 \
---region="${REGION}" \
---runtime="${RUNTIME}" \
---source="${FUNCTION_DIR}" \
---entry-point="${ENTRY_POINT}" \
---trigger-http \
---no-allow-unauthenticated \
---timeout="${TIMEOUT_SECONDS}" \
---memory="${MEMORY}" \
-"${SA_ARGS[@]}" \
---set-env-vars="PROJECT_ID=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},DATA_KEY=structured/datasets/listings_llm_master.csv,OUTPUT_PREFIX=preds_llm,TIMEZONE=America/New_York"
+          gcloud functions deploy "${FUNCTION_NAME}" \
+            --gen2 \
+            --region="${REGION}" \
+            --runtime="${RUNTIME}" \
+            --source="${FUNCTION_DIR}" \
+            --entry-point="${ENTRY_POINT}" \
+            --trigger-http \
+            --no-allow-unauthenticated \
+            --timeout="${TIMEOUT_SECONDS}" \
+            --memory="${MEMORY}" \
+            "${SA_ARGS[@]}" \
+            --set-env-vars="PROJECT_ID=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},DATA_KEY=structured/datasets/listings_llm_master.csv,OUTPUT_PREFIX=preds_llm,TIMEZONE=America/New_York"
 
-- name: Grant invoker to deployer and runtime SAs
-shell: bash
-run: |
-set -euo pipefail
+      - name: Grant invoker to deployer and runtime SAs
+        shell: bash
+        run: |
+          set -euo pipefail
 
-gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
---gen2 \
---region="${REGION}" \
---member="serviceAccount:${DEPLOYER_SA}"
+          gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
+            --gen2 \
+            --region="${REGION}" \
+            --member="serviceAccount:${DEPLOYER_SA}"
 
-if [[ -n "${RUNTIME_SA:-}" ]]; then
-gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
---gen2 \
---region="${REGION}" \
---member="serviceAccount:${RUNTIME_SA}"
-fi
+          if [[ -n "${RUNTIME_SA:-}" ]]; then
+            gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
+              --gen2 \
+              --region="${REGION}" \
+              --member="serviceAccount:${RUNTIME_SA}"
+          fi
 
-- name: Get Function URL
-id: cfurl
-shell: bash
-run: |
-set -euo pipefail
-URL="$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region "${REGION}" --format='value(serviceConfig.uri)')"
-echo "url=${URL}" >> "$GITHUB_OUTPUT"
-echo "Function URL: ${URL}"
+      - name: Get Function URL
+        id: cfurl
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region "${REGION}" --format='value(serviceConfig.uri)')"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "Function URL: ${URL}"
 
-- name: Ensure Scheduler API enabled
-shell: bash
-run: |
-set -euo pipefail
-gcloud services list --enabled --filter="cloudscheduler.googleapis.com" --format="value(config.name)" | grep -q cloudscheduler.googleapis.com || \
-gcloud services enable cloudscheduler.googleapis.com
+      - name: Ensure Scheduler API enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud services list --enabled --filter="cloudscheduler.googleapis.com" --format="value(config.name)" | grep -q cloudscheduler.googleapis.com || \
+          gcloud services enable cloudscheduler.googleapis.com
 
-- name: Create or update Cloud Scheduler job
-shell: bash
-run: |
-set -euo pipefail
+      - name: Create or update Cloud Scheduler job
+        shell: bash
+        run: |
+          set -euo pipefail
 
-JOB_NAME="${FUNCTION_NAME}-hourly"
-URL="${{ steps.cfurl.outputs.url }}"
+          JOB_NAME="${FUNCTION_NAME}-hourly"
+          URL="${{ steps.cfurl.outputs.url }}"
 
-if [[ -z "${URL}" ]]; then
-echo "Function URL is empty"
-exit 1
-fi
+          if [[ -z "${URL}" ]]; then
+            echo "Function URL is empty"
+            exit 1
+          fi
 
-if gcloud scheduler jobs describe "${JOB_NAME}" --location="${REGION}" >/dev/null 2>&1; then
-gcloud scheduler jobs update http "${JOB_NAME}" \
---location="${REGION}" \
---schedule="${CRON_EXPR}" \
---time-zone="America/New_York" \
---uri="${URL}" \
---http-method=POST \
---message-body='${{ env.SCHEDULE_BODY }}' \
---attempt-deadline="${TIMEOUT_SECONDS}s" \
---oidc-service-account-email="${RUNTIME_SA}" \
---oidc-token-audience="${URL}"
-else
-gcloud scheduler jobs create http "${JOB_NAME}" \
---location="${REGION}" \
---schedule="${CRON_EXPR}" \
---time-zone="America/New_York" \
---uri="${URL}" \
---http-method=POST \
---message-body='${{ env.SCHEDULE_BODY }}' \
---attempt-deadline="${TIMEOUT_SECONDS}s" \
---oidc-service-account-email="${RUNTIME_SA}" \
---oidc-token-audience="${URL}"
-fi
+          if gcloud scheduler jobs describe "${JOB_NAME}" --location="${REGION}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "${JOB_NAME}" \
+              --location="${REGION}" \
+              --schedule="${CRON_EXPR}" \
+              --time-zone="America/New_York" \
+              --uri="${URL}" \
+              --http-method=POST \
+              --message-body='${{ env.SCHEDULE_BODY }}' \
+              --attempt-deadline="${TIMEOUT_SECONDS}s" \
+              --oidc-service-account-email="${RUNTIME_SA}" \
+              --oidc-token-audience="${URL}"
+          else
+            gcloud scheduler jobs create http "${JOB_NAME}" \
+              --location="${REGION}" \
+              --schedule="${CRON_EXPR}" \
+              --time-zone="America/New_York" \
+              --uri="${URL}" \
+              --http-method=POST \
+              --message-body='${{ env.SCHEDULE_BODY }}' \
+              --attempt-deadline="${TIMEOUT_SECONDS}s" \
+              --oidc-service-account-email="${RUNTIME_SA}" \
+              --oidc-token-audience="${URL}"
+          fi
