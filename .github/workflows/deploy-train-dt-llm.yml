@@ -3,7 +3,7 @@ name: Deploy train-dt-llm (CF Gen2 + Cloud Scheduler)
 on:
 workflow_dispatch:
 push:
-branches: [ main ]
+branches: [main]
 paths:
 - 'cloud_function/train-dt-llm/**'
 - '.github/workflows/deploy-train-dt-llm.yml'
@@ -31,10 +31,12 @@ CRON_EXPR: "25 * * * *"
 jobs:
 deploy:
 runs-on: ubuntu-latest
-steps:
-- uses: actions/checkout@v4
 
-- name: "Auth (WIF)"
+steps:
+- name: Checkout
+uses: actions/checkout@v4
+
+- name: Auth (WIF)
 uses: google-github-actions/auth@v2
 with:
 workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
@@ -42,12 +44,12 @@ service_account: ${{ env.DEPLOYER_SA }}
 create_credentials_file: true
 export_environment_variables: true
 
-- name: "Setup gcloud"
+- name: Setup gcloud
 uses: google-github-actions/setup-gcloud@v2
 with:
 project_id: ${{ env.PROJECT_ID }}
 
-- name: "Verify source"
+- name: Verify source
 shell: bash
 run: |
 set -euo pipefail
@@ -55,10 +57,11 @@ ls -la "${FUNCTION_DIR}"
 test -f "${FUNCTION_DIR}/main.py"
 test -f "${FUNCTION_DIR}/requirements.txt"
 
-- name: "Deploy Cloud Function (Gen2)"
+- name: Deploy Cloud Function (Gen2)
 shell: bash
 run: |
 set -euo pipefail
+
 SA_ARGS=()
 if [[ -n "${RUNTIME_SA:-}" ]]; then
 SA_ARGS=(--service-account="${RUNTIME_SA}")
@@ -77,45 +80,54 @@ gcloud functions deploy "${FUNCTION_NAME}" \
 "${SA_ARGS[@]}" \
 --set-env-vars="PROJECT_ID=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},DATA_KEY=structured/datasets/listings_llm_master.csv,OUTPUT_PREFIX=preds_llm,TIMEZONE=America/New_York"
 
-- name: "Grant invoker to deployer & runtime SAs"
+- name: Grant invoker to deployer and runtime SAs
 shell: bash
 run: |
 set -euo pipefail
+
 gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
---gen2 --region "${REGION}" \
+--gen2 \
+--region="${REGION}" \
 --member="serviceAccount:${DEPLOYER_SA}"
+
 if [[ -n "${RUNTIME_SA:-}" ]]; then
 gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
---gen2 --region "${REGION}" \
+--gen2 \
+--region="${REGION}" \
 --member="serviceAccount:${RUNTIME_SA}"
 fi
 
-- name: "Get Function URL"
+- name: Get Function URL
 id: cfurl
 shell: bash
 run: |
 set -euo pipefail
-URL=$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region "${REGION}" --format='value(serviceConfig.uri)')
+URL="$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region "${REGION}" --format='value(serviceConfig.uri)')"
 echo "url=${URL}" >> "$GITHUB_OUTPUT"
 echo "Function URL: ${URL}"
 
-- name: "Ensure Scheduler API enabled"
+- name: Ensure Scheduler API enabled
 shell: bash
 run: |
 set -euo pipefail
-gcloud services list --enabled --filter="cloudscheduler.googleapis.com" --format="value(config.name)" | grep -q cloudscheduler.googleapis.com \
-|| gcloud services enable cloudscheduler.googleapis.com
+gcloud services list --enabled --filter="cloudscheduler.googleapis.com" --format="value(config.name)" | grep -q cloudscheduler.googleapis.com || \
+gcloud services enable cloudscheduler.googleapis.com
 
-- name: "Create/Update Cloud Scheduler job (:25 ET, OIDC)"
+- name: Create or update Cloud Scheduler job
 shell: bash
 run: |
 set -euo pipefail
+
 JOB_NAME="${FUNCTION_NAME}-hourly"
 URL="${{ steps.cfurl.outputs.url }}"
-[[ -z "${URL}" ]] && { echo "Function URL empty"; exit 1; }
 
-if gcloud scheduler jobs describe "$JOB_NAME" --location="${REGION}" >/dev/null 2>&1; then
-gcloud scheduler jobs update http "$JOB_NAME" \
+if [[ -z "${URL}" ]]; then
+echo "Function URL is empty"
+exit 1
+fi
+
+if gcloud scheduler jobs describe "${JOB_NAME}" --location="${REGION}" >/dev/null 2>&1; then
+gcloud scheduler jobs update http "${JOB_NAME}" \
 --location="${REGION}" \
 --schedule="${CRON_EXPR}" \
 --time-zone="America/New_York" \
@@ -126,7 +138,7 @@ gcloud scheduler jobs update http "$JOB_NAME" \
 --oidc-service-account-email="${RUNTIME_SA}" \
 --oidc-token-audience="${URL}"
 else
-gcloud scheduler jobs create http "$JOB_NAME" \
+gcloud scheduler jobs create http "${JOB_NAME}" \
 --location="${REGION}" \
 --schedule="${CRON_EXPR}" \
 --time-zone="America/New_York" \
