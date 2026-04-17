@@ -3,6 +3,7 @@ import json
 import logging
 import os
 
+import functions_framework
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -232,6 +233,7 @@ def run_pipeline():
 
 
 # ===== CLOUD FUNCTION ENTRY =====
+@functions_framework.http
 def train_dt_http(request):
     try:
         output = run_pipeline()
@@ -240,7 +242,6 @@ def train_dt_http(request):
             200,
             {"Content-Type": "application/json"},
         )
-
     except Exception as e:
         logging.exception("Error in pipeline")
         return (
