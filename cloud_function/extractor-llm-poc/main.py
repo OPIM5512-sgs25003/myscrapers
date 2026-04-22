@@ -2,13 +2,6 @@
 # Purpose: PoC LLM extractor that reads your existing per-listing JSONL records,
 # fetches the original TXT, asks an LLM (Vertex AI) to extract fields, and writes
 # a sibling "<post_id>_llm.jsonl" to the NEW 'jsonl_llm/' sub-directory.
-#
-# FINAL FIXES INCLUDED:
-# 1. Schema updated to use "type": "string" + "nullable": True.
-# 2. system_instruction removed from GenerationConfig and merged into prompt.
-# 3. LLM_MODEL set to 'gemini-2.5-flash' (Fixes 404/NotFound error).
-# 4. "additionalProperties": False removed from schema (Fixes internal ParseError).
-# 5. Non-breaking spaces (U+00A0) replaced with standard spaces (U+0020). <--- FIX FOR THIS ERROR
 
 import os
 import re
@@ -24,63 +17,71 @@ from google.cloud import storage
 
 # ---- REQUIRED VERTEX AI IMPORTS ----
 import vertexai
-from vertexai.generative_models import GenerativeModel, GenerationConfig, Content
-from google.api_core.exceptions import ResourceExhausted, InternalServerError, Aborted, DeadlineExceeded
-
-# -------------------- ENV --------------------
-PROJECT_ID           = os.getenv("PROJECT_ID", "")
-REGION               = os.getenv("REGION", "us-central1")
-BUCKET_NAME          = os.getenv("GCS_BUCKET", "")
-STRUCTURED_PREFIX    = os.getenv("STRUCTURED_PREFIX", "structured")
-LLM_PROVIDER         = os.getenv("LLM_PROVIDER", "vertex").lower()
-LLM_MODEL            = os.getenv("LLM_MODEL", "gemini-2.5-flash")
-OVERWRITE_DEFAULT    = os.getenv("OVERWRITE", "false").lower() == "true"
-MAX_FILES_DEFAULT    = int(os.getenv("MAX_FILES", "0") or 0)
-
-# GCS READ RETRY - Use default transient error logic
-READ_RETRY = gax_retry.Retry(
-    predicate=gax_retry.if_transient_error,
-    initial=1.0, maximum=10.0, multiplier=2.0, deadline=120.0
+from vertexai.generative_models import GenerativeModel, GenerationConfig
+from google.api_core.exceptions import (
+    ResourceExhausted,
+    InternalServerError,
+    Aborted,
+    DeadlineExceeded,
 )
 
-# LLM API RETRY PREDICATE
-def _if_llm_retryable(exception):
-    """Checks if the exception is transient and should trigger a retry."""
-    return isinstance(exception, (ResourceExhausted, InternalServerError, Aborted, DeadlineExceeded))
+# -------------------- ENV --------------------
+PROJECT_ID = os.getenv("PROJECT_ID", "")
+REGION = os.getenv("REGION", "us-central1")
+BUCKET_NAME = os.getenv("GCS_BUCKET", "")
+STRUCTURED_PREFIX = os.getenv("STRUCTURED_PREFIX", "structured")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "vertex").lower()
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+OVERWRITE_DEFAULT = os.getenv("OVERWRITE", "false").lower() == "true"
+MAX_FILES_DEFAULT = int(os.getenv("MAX_FILES", "0") or 0)
 
-# LLM CALL RETRY
+# GCS READ RETRY
+READ_RETRY = gax_retry.Retry(
+    predicate=gax_retry.if_transient_error,
+    initial=1.0,
+    maximum=10.0,
+    multiplier=2.0,
+    deadline=120.0,
+)
+
+
+def _if_llm_retryable(exception):
+    return isinstance(
+        exception,
+        (ResourceExhausted, InternalServerError, Aborted, DeadlineExceeded),
+    )
+
+
 LLM_RETRY = gax_retry.Retry(
     predicate=_if_llm_retryable,
-    initial=5.0, maximum=30.0, multiplier=2.0, deadline=180.0,
+    initial=5.0,
+    maximum=30.0,
+    multiplier=2.0,
+    deadline=180.0,
 )
 
 storage_client = storage.Client()
 _CACHED_MODEL_OBJ = None
 
-# Accept BOTH run id styles:
-RUN_ID_ISO_RE    = re.compile(r"^\d{8}T\d{6}Z$")
+# Accept BOTH run id styles
+RUN_ID_ISO_RE = re.compile(r"^\d{8}T\d{6}Z$")
 RUN_ID_PLAIN_RE = re.compile(r"^\d{14}$")
 
 
 # -------------------- HELPERS --------------------
 def _get_vertex_model() -> GenerativeModel:
-    """Initializes and returns the cached Vertex AI model object (thread-safe for CF)."""
     global _CACHED_MODEL_OBJ
     if _CACHED_MODEL_OBJ is None:
         if not PROJECT_ID:
             raise RuntimeError("PROJECT_ID environment variable is missing.")
-        
-        # Initialize client once per container lifecycle
+
         vertexai.init(project=PROJECT_ID, location=REGION)
         _CACHED_MODEL_OBJ = GenerativeModel(LLM_MODEL)
-        logging.info(f"Initialized Vertex AI model: {LLM_MODEL} in {REGION}")
+        logging.info("Initialized Vertex AI model: %s in %s", LLM_MODEL, REGION)
     return _CACHED_MODEL_OBJ
 
 
 def _list_structured_run_ids(bucket: str, structured_prefix: str) -> list[str]:
-    """
-    List 'structured/run_id=*/' directories and return normalized run_ids.
-    """
     it = storage_client.list_blobs(bucket, prefix=f"{structured_prefix}/", delimiter="/")
     for _ in it:
         pass
@@ -96,9 +97,6 @@ def _list_structured_run_ids(bucket: str, structured_prefix: str) -> list[str]:
 
 
 def _normalize_run_id_iso(run_id: str) -> str:
-    """
-    Normalize run_id to ISO8601 Z string for provenance.
-    """
     try:
         if RUN_ID_ISO_RE.match(run_id):
             dt = datetime.strptime(run_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
@@ -112,17 +110,12 @@ def _normalize_run_id_iso(run_id: str) -> str:
 
 
 def _list_per_listing_jsonl_for_run(bucket: str, run_id: str) -> list[str]:
-    """
-    Return *input* per-listing JSONL object names for a given run_id
-    (assumes inputs are in 'jsonl/').
-    """
     prefix = f"{STRUCTURED_PREFIX}/run_id={run_id}/jsonl/"
     bucket_obj = storage_client.bucket(bucket)
     names = []
     for b in bucket_obj.list_blobs(prefix=prefix):
-        if not b.name.endswith(".jsonl"):
-            continue
-        names.append(b.name)
+        if b.name.endswith(".jsonl"):
+            names.append(b.name)
     return names
 
 
@@ -153,42 +146,64 @@ def _safe_int(x):
         return None
 
 
+def _norm_str(s):
+    if s is None:
+        return None
+    s = str(s).strip()
+    return s if s else None
+
+
 # -------------------- VERTEX AI CALL --------------------
 def _vertex_extract_fields(raw_text: str) -> dict:
     """
-    Ask Gemini to return JSON with exactly: price, year, make, model, mileage.
+    Ask Gemini to return JSON with exactly:
+    price, year, color, make, model, mileage, city, state, zip_code
     """
     model = _get_vertex_model()
 
-    # Strict JSON schema - FIX: Removed "additionalProperties": False
     schema = {
         "type": "object",
         "properties": {
             "price": {"type": "integer", "nullable": True},
             "year": {"type": "integer", "nullable": True},
-            "color":{"type": "string", "nullable": True},
+            "color": {"type": "string", "nullable": True},
             "make": {"type": "string", "nullable": True},
             "model": {"type": "string", "nullable": True},
             "mileage": {"type": "integer", "nullable": True},
+            "city": {"type": "string", "nullable": True},
+            "state": {"type": "string", "nullable": True},
+            "zip_code": {"type": "string", "nullable": True},
         },
-        "required": ["price", "year", "make", "model", "mileage", "color"]
+        "required": [
+            "price",
+            "year",
+            "make",
+            "model",
+            "mileage",
+            "color",
+            "city",
+            "state",
+            "zip_code",
+        ],
     }
 
-    # System instruction (will be prepended to the prompt)
     sys_instr = (
         "Extract ONLY the following fields from the input text. "
         "Return a strict JSON object that conforms to the provided schema. "
         "If a value is not present, use null. "
         "Rules: integers for price/year/mileage; price in USD; mileage in miles; "
-        "do not infer values not explicitly present; do not add extra keys."
-        "Color: should be the exterior of a car. Blue, white, black, grey."
+        "do not infer values not explicitly present; do not add extra keys. "
+        "Fields to extract: "
+        "price, year, make, model, mileage, color, city, state, zip_code. "
+        "Color should be the exterior color of the car. "
+        "City should be the listing location if present. "
+        "State should be the listing state if present. "
+        "Zip_code should be the postal code if present."
     )
 
-    # FIX: Combine instruction and text into one prompt string (SDK compatibility)
     prompt = f"{sys_instr}\n\nTEXT:\n{raw_text}"
 
     gen_cfg = GenerationConfig(
-        # FIX: system_instruction removed to fix TypeError 
         temperature=0.0,
         top_p=1.0,
         top_k=40,
@@ -197,22 +212,25 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         response_schema=schema,
     )
 
-    # --- LLM CALL WITH RETRY ---
     max_attempts = 3
     resp = None
+
     for attempt in range(max_attempts):
         try:
-            # Pass the single string prompt
             resp = model.generate_content(prompt, generation_config=gen_cfg)
             break
         except Exception as e:
-            # Includes the 404/NotFound error from the previous run
             if not _if_llm_retryable(e) or attempt == max_attempts - 1:
-                logging.error(f"Fatal/non-retryable LLM error or max retries reached: {e}")
+                logging.error("Fatal/non-retryable LLM error or max retries reached: %s", e)
                 raise
-            
+
             sleep_time = LLM_RETRY._calculate_sleep(attempt)
-            logging.warning(f"Transient LLM error on attempt {attempt+1}/{max_attempts}. Retrying in {sleep_time:.2f}s...")
+            logging.warning(
+                "Transient LLM error on attempt %d/%d. Retrying in %.2fs...",
+                attempt + 1,
+                max_attempts,
+                sleep_time,
+            )
             time.sleep(sleep_time)
 
     if resp is None:
@@ -220,18 +238,16 @@ def _vertex_extract_fields(raw_text: str) -> dict:
 
     parsed = json.loads(resp.text)
 
-    # Normalize fields post-extraction
     parsed["price"] = _safe_int(parsed.get("price"))
     parsed["year"] = _safe_int(parsed.get("year"))
     parsed["mileage"] = _safe_int(parsed.get("mileage"))
-    
-    def _norm_str(s):
-        if s is None: return None
-        s = str(s).strip()
-        return s if s else None
 
     parsed["make"] = _norm_str(parsed.get("make"))
     parsed["model"] = _norm_str(parsed.get("model"))
+    parsed["color"] = _norm_str(parsed.get("color"))
+    parsed["city"] = _norm_str(parsed.get("city"))
+    parsed["state"] = _norm_str(parsed.get("state"))
+    parsed["zip_code"] = _norm_str(parsed.get("zip_code"))
 
     return parsed
 
@@ -248,9 +264,10 @@ def llm_extract_http(request: Request):
     if not PROJECT_ID:
         return jsonify({"ok": False, "error": "missing PROJECT_ID env"}), 500
     if LLM_PROVIDER != "vertex":
-        return jsonify({"ok": False, "error": "PoC supports LLM_PROVIDER='vertex' only"}), 400
+        return jsonify(
+            {"ok": False, "error": "PoC supports LLM_PROVIDER='vertex' only"}
+        ), 400
 
-    # Body overrides
     try:
         body = request.get_json(silent=True) or {}
     except Exception:
@@ -260,32 +277,46 @@ def llm_extract_http(request: Request):
     max_files = int(body.get("max_files") or MAX_FILES_DEFAULT or 0)
     overwrite = bool(body.get("overwrite")) if "overwrite" in body else OVERWRITE_DEFAULT
 
-    # Pick newest run if not provided
     if not run_id:
         runs = _list_structured_run_ids(BUCKET_NAME, STRUCTURED_PREFIX)
         if not runs:
-            return jsonify({"ok": False, "error": f"no run_ids found under {STRUCTURED_PREFIX}/"}), 200
+            return jsonify(
+                {"ok": False, "error": f"no run_ids found under {STRUCTURED_PREFIX}/"}
+            ), 200
         run_id = runs[-1]
 
     structured_iso = _normalize_run_id_iso(run_id)
 
     inputs = _list_per_listing_jsonl_for_run(BUCKET_NAME, run_id)
     if not inputs:
-        return jsonify({"ok": True, "run_id": run_id, "processed": 0, "written": 0, "skipped": 0, "errors": 0}), 200
+        return jsonify(
+            {
+                "ok": True,
+                "run_id": run_id,
+                "processed": 0,
+                "written": 0,
+                "skipped": 0,
+                "errors": 0,
+            }
+        ), 200
+
     if max_files > 0:
         inputs = inputs[:max_files]
 
-    logging.info(f"Starting LLM extraction for run_id={run_id} ({len(inputs)} files to process)")
+    logging.info("Starting LLM extraction for run_id=%s (%d files to process)", run_id, len(inputs))
 
-    processed = written = skipped = errors = 0
+    processed = 0
+    written = 0
+    skipped = 0
+    errors = 0
 
     for in_key in inputs:
         processed += 1
         try:
-            # Read the tiny JSON line (single record)
             raw_line = _download_text(in_key).strip()
             if not raw_line:
                 raise ValueError("empty input jsonl")
+
             base_rec = json.loads(raw_line)
 
             post_id = base_rec.get("post_id")
@@ -296,7 +327,6 @@ def llm_extract_http(request: Request):
             if not source_txt_key:
                 raise ValueError("missing source_txt in input record")
 
-            # Output path: uses 'jsonl_llm/' folder
             out_prefix = in_key.rsplit("/", 2)[0] + "/jsonl_llm"
             out_key = out_prefix + f"/{post_id}_llm.jsonl"
 
@@ -304,12 +334,9 @@ def llm_extract_http(request: Request):
                 skipped += 1
                 continue
 
-            # Fetch the raw listing TXT; send to LLM
             raw_listing = _download_text(source_txt_key)
-
             parsed = _vertex_extract_fields(raw_listing)
 
-            # Compose final record
             out_record = {
                 "post_id": post_id,
                 "run_id": base_rec.get("run_id", run_id),
@@ -321,6 +348,9 @@ def llm_extract_http(request: Request):
                 "model": parsed.get("model"),
                 "mileage": parsed.get("mileage"),
                 "color": parsed.get("color"),
+                "city": parsed.get("city"),
+                "state": parsed.get("state"),
+                "zip_code": parsed.get("zip_code"),
                 "llm_provider": "vertex",
                 "llm_model": LLM_MODEL,
                 "llm_ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -331,7 +361,12 @@ def llm_extract_http(request: Request):
 
         except Exception as e:
             errors += 1
-            logging.error(f"LLM extraction failed for {in_key}: {e}\n{traceback.format_exc()}")
+            logging.error(
+                "LLM extraction failed for %s: %s\n%s",
+                in_key,
+                e,
+                traceback.format_exc(),
+            )
 
     result = {
         "ok": True,
