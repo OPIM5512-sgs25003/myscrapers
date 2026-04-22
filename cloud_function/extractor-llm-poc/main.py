@@ -138,7 +138,7 @@ def _safe_int(x):
     try:
         if x is None or x == "":
             return None
-        return int(str(x).replace(",", "").strip())
+        return int(str(x).replace(",", "").replace("$", "").strip())
     except Exception:
         return None
 
@@ -184,21 +184,47 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         ],
     }
 
-    sys_instr = (
-        "Extract ONLY the following fields from the input text. "
-        "Return a strict JSON object that conforms to the provided schema. "
-        "If a value is not present, use null. "
-        "Rules: integers for price/year/mileage; price in USD; mileage in miles; "
-        "do not infer values not explicitly present; do not add extra keys. "
-        "Fields to extract are: price, year, make, model, mileage, color, city, state, zip_code. "
-        "Color should be the exterior color of the car only. "
-        "City should be the listing location if present. "
-        "State should be the listing state if present. "
-        "Zip_code should be the postal code if present. "
-        "If city/state/zip_code are not explicitly present, return null for them."
-    )
+    prompt = f"""
+Extract structured information from this Craigslist car listing.
 
-    prompt = f"{sys_instr}\n\nTEXT:\n{raw_text}"
+Return ONLY one valid JSON object.
+You MUST include ALL of these keys every time, even if the value is null:
+
+- price
+- year
+- make
+- model
+- mileage
+- color
+- city
+- state
+- zip_code
+
+Rules:
+1. Output JSON only. No markdown. No explanation.
+2. If a field is missing, set it to null.
+3. price, year, mileage must be integers when present.
+4. color means the car exterior color only.
+5. city, state, zip_code should come from the listing location if explicitly present.
+6. Do not invent values. If not clearly present, use null.
+7. zip_code must stay a string if present.
+
+Example output:
+{{
+  "price": 4500,
+  "year": 2010,
+  "make": "Nissan",
+  "model": "Altima",
+  "mileage": 163117,
+  "color": "black",
+  "city": "Hartford",
+  "state": "CT",
+  "zip_code": "06103"
+}}
+
+Listing text:
+{raw_text}
+"""
 
     gen_cfg = GenerationConfig(
         temperature=0.0,
@@ -234,6 +260,10 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         raise RuntimeError("LLM call failed after all retries.")
 
     parsed = json.loads(resp.text)
+
+    # Ensure all keys exist even if model omitted them
+    for k in ["price", "year", "make", "model", "mileage", "color", "city", "state", "zip_code"]:
+        parsed.setdefault(k, None)
 
     parsed["price"] = _safe_int(parsed.get("price"))
     parsed["year"] = _safe_int(parsed.get("year"))
