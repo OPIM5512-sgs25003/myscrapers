@@ -1,7 +1,7 @@
 # main.py
 # Purpose: PoC LLM extractor that reads your existing per-listing JSONL records,
 # fetches the original TXT, asks an LLM (Vertex AI) to extract fields, and writes
-# a sibling "<post_id>_llm.jsonl" to the NEW 'jsonl_llm/' sub-directory.
+# a sibling "<post_id>_llm.jsonl" to the 'jsonl_llm/' sub-directory.
 
 import os
 import re
@@ -15,7 +15,6 @@ from flask import Request, jsonify
 from google.api_core import retry as gax_retry
 from google.cloud import storage
 
-# ---- REQUIRED VERTEX AI IMPORTS ----
 import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 from google.api_core.exceptions import (
@@ -35,7 +34,6 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash")
 OVERWRITE_DEFAULT = os.getenv("OVERWRITE", "false").lower() == "true"
 MAX_FILES_DEFAULT = int(os.getenv("MAX_FILES", "0") or 0)
 
-# GCS READ RETRY
 READ_RETRY = gax_retry.Retry(
     predicate=gax_retry.if_transient_error,
     initial=1.0,
@@ -63,7 +61,6 @@ LLM_RETRY = gax_retry.Retry(
 storage_client = storage.Client()
 _CACHED_MODEL_OBJ = None
 
-# Accept BOTH run id styles
 RUN_ID_ISO_RE = re.compile(r"^\d{8}T\d{6}Z$")
 RUN_ID_PLAIN_RE = re.compile(r"^\d{14}$")
 
@@ -146,10 +143,10 @@ def _safe_int(x):
         return None
 
 
-def _norm_str(s):
-    if s is None:
+def _norm_str(x):
+    if x is None:
         return None
-    s = str(s).strip()
+    s = str(x).strip()
     return s if s else None
 
 
@@ -157,7 +154,7 @@ def _norm_str(s):
 def _vertex_extract_fields(raw_text: str) -> dict:
     """
     Ask Gemini to return JSON with exactly:
-    price, year, color, make, model, mileage, city, state, zip_code
+    price, year, make, model, mileage, color, city, state, zip_code
     """
     model = _get_vertex_model()
 
@@ -166,10 +163,10 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         "properties": {
             "price": {"type": "integer", "nullable": True},
             "year": {"type": "integer", "nullable": True},
-            "color": {"type": "string", "nullable": True},
             "make": {"type": "string", "nullable": True},
             "model": {"type": "string", "nullable": True},
             "mileage": {"type": "integer", "nullable": True},
+            "color": {"type": "string", "nullable": True},
             "city": {"type": "string", "nullable": True},
             "state": {"type": "string", "nullable": True},
             "zip_code": {"type": "string", "nullable": True},
@@ -193,12 +190,12 @@ def _vertex_extract_fields(raw_text: str) -> dict:
         "If a value is not present, use null. "
         "Rules: integers for price/year/mileage; price in USD; mileage in miles; "
         "do not infer values not explicitly present; do not add extra keys. "
-        "Fields to extract: "
-        "price, year, make, model, mileage, color, city, state, zip_code. "
-        "Color should be the exterior color of the car. "
+        "Fields to extract are: price, year, make, model, mileage, color, city, state, zip_code. "
+        "Color should be the exterior color of the car only. "
         "City should be the listing location if present. "
         "State should be the listing state if present. "
-        "Zip_code should be the postal code if present."
+        "Zip_code should be the postal code if present. "
+        "If city/state/zip_code are not explicitly present, return null for them."
     )
 
     prompt = f"{sys_instr}\n\nTEXT:\n{raw_text}"
@@ -220,7 +217,7 @@ def _vertex_extract_fields(raw_text: str) -> dict:
             resp = model.generate_content(prompt, generation_config=gen_cfg)
             break
         except Exception as e:
-            if not _if_llm_retryable(e) or attempt == max_attempts - 1:
+            if (not _if_llm_retryable(e)) or (attempt == max_attempts - 1):
                 logging.error("Fatal/non-retryable LLM error or max retries reached: %s", e)
                 raise
 
@@ -264,9 +261,7 @@ def llm_extract_http(request: Request):
     if not PROJECT_ID:
         return jsonify({"ok": False, "error": "missing PROJECT_ID env"}), 500
     if LLM_PROVIDER != "vertex":
-        return jsonify(
-            {"ok": False, "error": "PoC supports LLM_PROVIDER='vertex' only"}
-        ), 400
+        return jsonify({"ok": False, "error": "PoC supports LLM_PROVIDER='vertex' only"}), 400
 
     try:
         body = request.get_json(silent=True) or {}
@@ -280,9 +275,7 @@ def llm_extract_http(request: Request):
     if not run_id:
         runs = _list_structured_run_ids(BUCKET_NAME, STRUCTURED_PREFIX)
         if not runs:
-            return jsonify(
-                {"ok": False, "error": f"no run_ids found under {STRUCTURED_PREFIX}/"}
-            ), 200
+            return jsonify({"ok": False, "error": f"no run_ids found under {STRUCTURED_PREFIX}/"}), 200
         run_id = runs[-1]
 
     structured_iso = _normalize_run_id_iso(run_id)
