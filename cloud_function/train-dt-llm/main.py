@@ -108,14 +108,16 @@ def run_pipeline():
     df = df.dropna(subset=["price", "year", "mileage"]).copy()
 
     # Fill text features safely
-    for col in ["make", "model", "color"]:
+    for col in ["make", "model", "color", "city", "state"]:
         if col in df.columns:
             df[col] = df[col].fillna("unknown").astype(str)
         else:
             df[col] = "unknown"
 
     # ===== FEATURES =====
-    feature_cols = ["year", "mileage", "make", "model", "color"]
+    # zip_code intentionally excluded from modeling due to very high cardinality
+    feature_cols = ["year", "mileage", "make", "model", "color", "city", "state"]
+
     X_raw = df[feature_cols].copy()
     X = pd.get_dummies(X_raw, drop_first=True)
     y = df["price"]
@@ -253,4 +255,4 @@ def train_dt_http(request):
             ),
             500,
             {"Content-Type": "application/json"},
-        )
+        )     
