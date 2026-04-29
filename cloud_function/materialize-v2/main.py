@@ -102,7 +102,7 @@ def materialize_http(request: Request):
         if not BUCKET_NAME:
             return jsonify({"ok": False, "error": "missing GCS_BUCKET env"}), 500
 
-        run_ids = _list_run_ids(BUCKET_NAME, STRUCTURED_PREFIX)
+        run_ids = _list_run_ids(BUCKET_NAME, STRUCTURED_PREFIX)[-3:]
         if not run_ids:
             return jsonify({"ok": False, "error": f"no runs found under {STRUCTURED_PREFIX}/"}), 200
 
